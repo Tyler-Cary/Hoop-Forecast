@@ -16,7 +16,213 @@ const NBA_HEADERS = {
 };
 
 /**
- * Search for a player by name
+ * Search for players by name using ESPN API
+ * Returns array of matching players (for search functionality)
+ */
+export async function searchPlayersESPN(playerName) {
+  try {
+    console.log(`🔍 Searching ESPN for players: "${playerName}"`);
+    
+    const searchName = playerName.toLowerCase().trim();
+    const results = [];
+    
+    // ESPN API endpoint for NBA teams
+    const teamsUrl = 'https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/teams';
+    
+    // Get all NBA teams
+    const teamsResponse = await axios.get(teamsUrl, {
+      params: {
+        region: 'us',
+        lang: 'en',
+        contentorigin: 'espn',
+        limit: 50
+      },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'application/json'
+      },
+      timeout: 15000
+    });
+    
+    if (!teamsResponse.data || !teamsResponse.data.sports || !teamsResponse.data.sports[0]) {
+      throw new Error('Invalid response from ESPN teams API');
+    }
+    
+    const leagues = teamsResponse.data.sports[0].leagues || [];
+    const teams = leagues[0]?.teams || [];
+    
+    console.log(`📋 Found ${teams.length} teams from ESPN`);
+    
+    // Get rosters for each team in parallel (limit to avoid rate limits)
+    const teamPromises = teams.slice(0, 30).map(async (team) => {
+      try {
+        const teamId = team.team?.id;
+        if (!teamId) return [];
+        
+        const rosterUrl = `https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/roster`;
+        
+        const rosterResponse = await axios.get(rosterUrl, {
+          params: {
+            region: 'us',
+            lang: 'en',
+            contentorigin: 'espn'
+          },
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept': 'application/json'
+          },
+          timeout: 10000
+        });
+        
+        if (!rosterResponse.data || !rosterResponse.data.athletes) {
+          return [];
+        }
+        
+        const athletes = rosterResponse.data.athletes || [];
+        const teamAbbrev = team.team?.abbreviation || team.team?.shortDisplayName || 'N/A';
+        const teamName = team.team?.displayName || team.team?.name || 'N/A';
+        
+        // Filter athletes matching search name
+        const matchingPlayers = athletes
+          .filter(athlete => {
+            const fullName = `${athlete.firstName || ''} ${athlete.lastName || ''}`.toLowerCase();
+            const displayName = (athlete.displayName || '').toLowerCase();
+            const shortName = (athlete.shortName || '').toLowerCase();
+            
+            return fullName.includes(searchName) || 
+                   displayName.includes(searchName) || 
+                   shortName.includes(searchName);
+          })
+          .map(athlete => {
+            const fullName = `${athlete.firstName || ''} ${athlete.lastName || ''}`.trim();
+            
+            return {
+              id: athlete.id, // ESPN ID (we use name for API calls now)
+              first_name: athlete.firstName || '',
+              last_name: athlete.lastName || '',
+              full_name: fullName,
+              display_name: athlete.displayName || fullName,
+              position: athlete.position?.abbreviation || athlete.position?.name || 'N/A',
+              team: {
+                abbreviation: teamAbbrev,
+                name: teamName
+              },
+              team_name: teamName,
+              jersey: athlete.jersey || null,
+              headshot: athlete.headshot?.href || null,
+              espn_id: athlete.id
+            };
+          });
+        
+        return matchingPlayers;
+      } catch (error) {
+        // Silently skip teams that fail (rate limits, etc.)
+        return [];
+      }
+    });
+    
+    // Wait for all roster requests (with some delay to avoid rate limits)
+    const rosterResults = await Promise.allSettled(teamPromises);
+    
+    // Flatten results
+    for (const result of rosterResults) {
+      if (result.status === 'fulfilled' && Array.isArray(result.value)) {
+        results.push(...result.value);
+      }
+    }
+    
+    // Remove duplicates (same player ID)
+    const uniqueResults = [];
+    const seenIds = new Set();
+    for (const player of results) {
+      if (!seenIds.has(player.id)) {
+        seenIds.add(player.id);
+        uniqueResults.push(player);
+      }
+    }
+    
+    // Sort by relevance (exact name matches first)
+    uniqueResults.sort((a, b) => {
+      const aName = a.full_name.toLowerCase();
+      const bName = b.full_name.toLowerCase();
+      const aStarts = aName.startsWith(searchName);
+      const bStarts = bName.startsWith(searchName);
+      
+      if (aStarts && !bStarts) return -1;
+      if (!aStarts && bStarts) return 1;
+      return aName.localeCompare(bName);
+    });
+    
+    console.log(`✅ Found ${uniqueResults.length} matching players from ESPN`);
+    return uniqueResults.slice(0, 25); // Limit to 25 results
+    
+  } catch (error) {
+    console.error('❌ Error searching ESPN for players:', error.message);
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', JSON.stringify(error.response.data).substring(0, 200));
+    }
+    throw new Error(`Failed to search players on ESPN: ${error.message}`);
+  }
+}
+
+/**
+ * Get player stats directly from NBA.com API using player name
+ * Returns stats in the same format as balldontlie service
+ */
+export async function getPlayerStatsFromNBA(playerName) {
+  try {
+    console.log(`📊 Fetching stats from NBA.com for: ${playerName}`);
+    
+    // Search for player
+    const nbaPlayer = await searchPlayer(playerName);
+    
+    if (!nbaPlayer || !nbaPlayer.id) {
+      throw new Error(`Player "${playerName}" not found on NBA.com`);
+    }
+    
+    console.log(`✅ Found NBA.com player: ${nbaPlayer.name} (ID: ${nbaPlayer.id})`);
+    
+    // Get game log
+    const games = await getPlayerGameLog(nbaPlayer.id);
+    
+    if (!games || games.length === 0) {
+      throw new Error(`No game data found for ${playerName}`);
+    }
+    
+    // Get player info for additional details
+    let playerInfo = null;
+    try {
+      playerInfo = await getPlayerInfo(nbaPlayer.id);
+    } catch (infoError) {
+      console.log(`⚠️ Could not fetch detailed player info: ${infoError.message}`);
+    }
+    
+    // Parse player name
+    const nameParts = nbaPlayer.name.split(' ');
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+    
+    return {
+      player: {
+        id: nbaPlayer.id,
+        nba_id: nbaPlayer.id,
+        first_name: playerInfo?.first_name || firstName,
+        last_name: playerInfo?.last_name || lastName,
+        position: playerInfo?.position || 'N/A',
+        team: nbaPlayer.team || 'N/A'
+      },
+      games: games
+    };
+  } catch (error) {
+    console.error(`❌ Error fetching stats from NBA.com for ${playerName}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Search for a player by name (legacy function - kept for backward compatibility)
+ * Uses NBA.com API - returns single player match
  */
 export async function searchPlayer(playerName) {
   try {

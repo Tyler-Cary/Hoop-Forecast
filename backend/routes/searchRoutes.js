@@ -1,11 +1,12 @@
 import express from 'express';
-import { searchPlayer, getActivePlayers } from '../services/balldontlieService.js';
+import { searchPlayersESPN } from '../services/nbaApiService.js';
+import { getActivePlayers } from '../services/balldontlieService.js';
 
 const router = express.Router();
 
 /**
  * GET /api/search?q=playerName
- * Search for players by name
+ * Search for players by name using ESPN API
  */
 router.get('/', async (req, res) => {
   try {
@@ -15,8 +16,8 @@ router.get('/', async (req, res) => {
     }
 
     console.log(`🔍 Search request for: "${query}"`);
-    const players = await searchPlayer(query);
-    console.log(`✅ Returning ${players.length} players`);
+    const players = await searchPlayersESPN(query);
+    console.log(`✅ Returning ${players.length} players from ESPN`);
     res.json(players);
   } catch (error) {
     console.error('❌ Error in search route:', error);

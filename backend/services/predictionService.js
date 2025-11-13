@@ -167,6 +167,75 @@ export async function predictPoints(playerId) {
 }
 
 /**
+ * Predict points from games array directly (without needing player ID)
+ */
+export async function predictPointsFromGames(games, playerName) {
+  if (!games || games.length < 3) {
+    throw new Error(`Insufficient game data for prediction. Need at least 3 games, got ${games?.length || 0}.`);
+  }
+  
+  console.log(`✅ Using ${games.length} games for prediction (direct)`);
+  
+  // Prepare data for regression (same logic as predictPoints)
+  const reversedGames = [...games].reverse();
+  const gameNumbers = reversedGames.map((game, index) => index + 1);
+  const playerPoints = reversedGames.map(game => {
+    const pts = typeof game.points === 'number' ? game.points : parseFloat(game.points) || 0;
+    return Math.max(0, pts);
+  });
+  
+  // Calculate weighted average
+  const decay = 0.1;
+  const weights = reversedGames.map((game, index) => {
+    const age = reversedGames.length - index - 1;
+    return Math.exp(-decay * age);
+  });
+  
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  const normalizedWeights = weights.map(w => w / totalWeight);
+  
+  let weightedSum = 0;
+  for (let i = 0; i < playerPoints.length; i++) {
+    weightedSum += playerPoints[i] * normalizedWeights[i];
+  }
+  
+  const simpleAvg = playerPoints.reduce((a, b) => a + b, 0) / playerPoints.length;
+  const recentGames = playerPoints.slice(-3);
+  const recentAvg = recentGames.reduce((a, b) => a + b, 0) / recentGames.length;
+  
+  const predictedPoints = (weightedSum * 0.5) + (recentAvg * 0.3) + (simpleAvg * 0.2);
+  
+  const meanPoints = playerPoints.reduce((a, b) => a + b, 0) / playerPoints.length;
+  const variance = playerPoints.reduce((sum, pts) => sum + Math.pow(pts - meanPoints, 2), 0) / playerPoints.length;
+  const stdDev = Math.sqrt(variance);
+  
+  const recentStdDev = calculateStdDev(recentGames);
+  const consistencyScore = 1 - Math.min(recentStdDev / (recentAvg || 1), 1);
+  
+  const confidence = Math.min(100, Math.max(0, 
+    (games.length / 10) * 40 +
+    consistencyScore * 40 +
+    (1 - Math.min(stdDev / meanPoints, 1)) * 20
+  ));
+  
+  const errorMargin = stdDev;
+  
+  return {
+    player: playerName || 'Player',
+    predicted_points: Math.max(0, Math.round(predictedPoints * 10) / 10),
+    confidence: Math.round(confidence * 10) / 10,
+    error_margin: Math.round(errorMargin * 10) / 10,
+    games_used: games.length,
+    method: 'weighted_average',
+    stats: {
+      weighted_avg: Math.round(weightedSum * 10) / 10,
+      recent_avg: Math.round(recentAvg * 10) / 10,
+      overall_avg: Math.round(simpleAvg * 10) / 10
+    }
+  };
+}
+
+/**
  * Calculate standard deviation
  */
 function calculateStdDev(values) {

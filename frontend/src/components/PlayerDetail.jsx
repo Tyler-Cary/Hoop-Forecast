@@ -20,8 +20,16 @@ function PlayerDetail({ player, onBack }) {
     setError(null);
 
     try {
-      console.log(`Fetching comparison data for player ID: ${player.id}`);
-      const response = await axios.get(`${API_BASE}/player/${player.id}/compare`);
+      const playerName = `${player.first_name || ''} ${player.last_name || ''}`.trim();
+      console.log(`Fetching comparison data for player: ${playerName}`);
+      
+      // Build query params with player name (required)
+      const params = new URLSearchParams();
+      params.append('name', playerName);
+      
+      // Use any ID (doesn't matter since we use name)
+      const url = `${API_BASE}/player/${player.id || '0'}/compare?${params.toString()}`;
+      const response = await axios.get(url);
       console.log('Received comparison data:', response.data);
       setComparisonData(response.data);
     } catch (err) {
